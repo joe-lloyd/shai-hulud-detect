@@ -275,19 +275,27 @@ check_content() {
     )
 
     # Search multiple patterns at once using all cores
-    find "${find_args[@]}" | xargs -0 -P "$num_cores" grep -l -E "webhook\.site|bb8ca5f6-4175-45d2-b042-fc9ebb8170b7" 2>/dev/null | while IFS= read -r file; do
-        # We need to check which pattern was found
-        if grep -q "webhook\.site" "$file"; then
-            local finding="$file:webhook.site reference"
-            SUSPICIOUS_CONTENT+=("$finding")
-            echo "[SUSPICIOUS_CONTENT] $finding" >> "$LOG_FILE"
-        fi
-        if grep -q "bb8ca5f6-4175-45d2-b042-fc9ebb8170b7" "$file"; then
-            local finding="$file:malicious webhook endpoint"
-            SUSPICIOUS_CONTENT+=("$finding")
-            echo "[SUSPICIOUS_CONTENT] $finding" >> "$LOG_FILE"
-        fi
-    done
+    # CORRECTED: Added '|| true' to prevent set -e from exiting if grep finds no matches.
+    local matched_files
+    matched_files=$(find "${find_args[@]}" | xargs -0 -P "$num_cores" grep -l -E "webhook\.site|bb8ca5f6-4175-45d2-b042-fc9ebb8170b7" 2>/dev/null || true)
+
+    # Check if any files were matched before proceeding
+    if [[ -n "$matched_files" ]]; then
+        # Now loop through only the files that contained a match
+        echo "$matched_files" | while IFS= read -r file; do
+            # We need to re-check which pattern was found in this specific file
+            if grep -q "webhook\.site" "$file" 2>/dev/null; then
+                local finding="$file:webhook.site reference"
+                SUSPICIOUS_CONTENT+=("$finding")
+                echo "[SUSPICIOUS_CONTENT] $finding" >> "$LOG_FILE"
+            fi
+            if grep -q "bb8ca5f6-4175-45d2-b042-fc9ebb8170b7" "$file" 2>/dev/null; then
+                local finding="$file:malicious webhook endpoint"
+                SUSPICIOUS_CONTENT+=("$finding")
+                echo "[SUSPICIOUS_CONTENT] $finding" >> "$LOG_FILE"
+            fi
+        done
+    fi
 }
 
 # Check for cryptocurrency theft patterns (Chalk/Debug attack Sept 8, 2025)
