@@ -7,32 +7,35 @@
 [![Last Commit](https://img.shields.io/github/last-commit/Cobenian/shai-hulud-detect)](https://github.com/Cobenian/shai-hulud-detect/commits/main)
 [![Security Tool](https://img.shields.io/badge/type-Security%20Tool-red)](#overview)
 
-
 <img src="shai_hulu_detector.jpg" alt="sshd" width="80%" />
 
-A bash script to detect indicators of compromise from the September 2025 npm supply chain attacks, including the Shai-Hulud self-replicating worm and the chalk/debug crypto theft attack. This comprehensive detector covers 571+ compromised package versions across multiple attack campaigns, providing protection against the most severe JavaScript supply chain attacks to date.
+A high-performance bash script to detect indicators of compromise from the September 2025 npm supply chain attacks, including the Shai-Hulud self-replicating worm and the chalk/debug crypto theft attack. This detector covers 571+ compromised package versions and is optimized for scanning large monorepos quickly and efficiently.
 
 ## Overview
 
 This detector covers multiple npm supply chain attacks from September 2025:
 
 ### 🎯 **Chalk/Debug Crypto Theft Attack** (September 8, 2025)
+
 - **Scope**: 18+ packages with 2+ billion weekly downloads
 - **Attack**: Cryptocurrency wallet address replacement in browsers
-- **Duration**: ~2 hours before detection
-- **Packages**: chalk, debug, ansi-styles, color-*, supports-*, and others
-- **Method**: XMLHttpRequest hijacking to steal crypto transactions
+- **Packages**: `chalk`, `debug`, `ansi-styles`, and others
 
 ### 🐛 **Shai-Hulud Self-Replicating Worm** (September 14-16, 2025)
+
 - **Scope**: 517+ packages across multiple namespaces
 - **Attack**: Credential harvesting and self-propagation
-- **Method**: Uses Trufflehog to scan for secrets, publishes stolen data to GitHub
-- **Propagation**: Self-replicates using stolen npm tokens
-- **Packages**: @ctrl/*, @crowdstrike/*, @operato/*, and many others
+- **Packages**: `@ctrl/*`, `@crowdstrike/*`, `@operato/*`, and many others
 
-The script detects indicators from both attacks to provide comprehensive protection against these sophisticated supply chain compromises.
+This script detects indicators from both attacks to provide comprehensive protection. It has been optimized with parallel processing and directory exclusion to handle even the largest codebases without crashing.
+
+-----
 
 ## Quick Start
+
+### Main Detector (`shai-hulud-detector.sh`)
+
+This is the primary, deep-scanning tool that inspects file contents, hashes, and git history.
 
 ```bash
 # Clone the repository (required for compromised package list)
@@ -42,16 +45,87 @@ cd shai-hulud-detector
 # Make the script executable
 chmod +x shai-hulud-detector.sh
 
-# Scan your project for Shai-Hulud indicators
+# Scan your project for indicators
 ./shai-hulud-detector.sh /path/to/your/project
 
-# For comprehensive security scanning
-./shai-hulud-detector.sh --paranoid /path/to/your/project
+# Scan while skipping a large submodule or vendor directory
+./shai-hulud-detector.sh --skip-dir /path/to/your/project/submodule /path/to/your/project
+
+# Skip multiple directories
+./shai-hulud-detector.sh \
+  --skip-dir ./node_modules \
+  --skip-dir ./vendor \
+  /path/to/your/project
 ```
+
+### Companion Script: Quick Dependency Check (`check-npm-deps.sh`)
+
+This is a faster, separate script that **only** checks your installed `node_modules` against the compromised list. It's perfect for a quick check in CI/CD pipelines.
+
+```bash
+# Make the second script executable
+chmod +x check-npm-deps.sh
+
+# Run it from inside your project directory
+cd /path/to/your/project
+../check-npm-deps.sh ../compromised-packages.txt
+```
+
+-----
+
+## Latest Updates (As of Sept 19, 2025)
+
+- **v2.1.0 (2025-09-19): Performance & Usability Overhaul**
+  - **Directory Exclusion**: Added `--skip-dir` flag to exclude directories (like submodules or `node_modules`) from scans, preventing crashes on large projects. Can be used multiple times.
+  - **Real-Time Logging**: The script now creates a `shai-hulud-findings.log` file to save findings instantly. This allows you to see partial results even if the script is cancelled or fails.
+  - **Parallel Processing**: Core scanning functions (like `check_content`) were rewritten to use `xargs` to spread the workload across all available CPU cores, resulting in a massive speedup.
+  - **Enhanced Error Handling**: Improved functions to catch common errors (like unparseable `package.json` files) and report them gracefully instead of silently crashing.
+  - **Added `check-npm-deps.sh`**: A new, fast companion script that uses `npm ls` for a quick check of installed dependencies.
+
+-----
+
+## Output Interpretation
+
+In addition to the final report in your terminal, the script now provides real-time updates.
+
+### Real-Time Log File
+
+- A file named **`shai-hulud-findings.log`** is created in the directory where you run the script.
+- It contains every finding the moment it is discovered.
+- You can "watch" this file live from a second terminal window to see results as they come in:
+
+    ```bash
+    tail -f shai-hulud-findings.log
+    ```
+
+### Final Report
+
+The final report in your terminal remains the same, categorizing findings by risk level.
+
+- **🚨 HIGH RISK**: Definitive indicators of compromise.
+- **⚠️ MEDIUM RISK**: Suspicious patterns requiring manual review.
+
+-----
+
+## How it Works
+
+The script performs these comprehensive checks:
+
+1. **Package Database Loading**: Loads 571+ compromised packages from `compromised-packages.txt`.
+2. **Real-Time Logging**: Initializes `shai-hulud-findings.log` to record findings instantly.
+3. **Content Scanning**: Uses parallel processing (`find` and `xargs`) to grep for suspicious URLs, webhook endpoints, and malicious patterns across all available CPU cores for maximum speed.
+4. **Package Analysis**: Parses `package.json` files for compromised versions and namespaces, now with a progress bar and robust error handling.
+5. **Hash Verification**: Calculates SHA-256 hashes of key files against known malicious hashes.
+6. ...and all other checks as previously described (Git Analysis, Postinstall Hooks, etc.).
+
+-----
+
+*(The rest of the README, including sections on "What it Detects", "Requirements", "Contributing", and "References", remains accurate and does not need changes.)*
 
 ## What it Detects
 
 ### High Risk Indicators
+
 - **Malicious workflow files**: `shai-hulud-workflow.yml` files in `.github/workflows/`
 - **Known malicious file hashes**: Files matching SHA-256 hash `46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09`
 - **Compromised package versions**: Specific versions of 571+ packages from multiple attacks
@@ -60,6 +134,7 @@ chmod +x shai-hulud-detector.sh
 - **Shai-Hulud repositories**: Git repositories named "Shai-Hulud" (used for data exfiltration)
 
 ### Medium Risk Indicators
+
 - **Suspicious content patterns**: References to `webhook.site` and the malicious endpoint `bb8ca5f6-4175-45d2-b042-fc9ebb8170b7`
 - **Suspicious git branches**: Branches named "shai-hulud"
 - **Compromised namespaces**: Packages from namespaces known to be affected (@ctrl, @crowdstrike, @art-ws, @ngx, @nativescript-community)
@@ -71,10 +146,12 @@ The script detects compromised packages from multiple September 2025 attacks. **
 ### Package Detection Method
 
 The script loads compromised packages from an external file (`compromised-packages.txt`) which contains:
+
 - **571+ confirmed compromised package versions** with exact version numbers
 - **11 affected namespaces** for broader detection of packages from compromised maintainer accounts
 
 ### Key Compromised Packages Include
+
 - `@ctrl/tinycolor@4.1.1, 4.1.2` - Shai-Hulud attack vector (2M+ weekly downloads)
 - `chalk@5.6.1`, `debug@4.4.2` - Chalk/Debug crypto theft attack (2B+ weekly downloads)
 - `@art-ws/*` packages (16+ packages) - Art workspace utilities
@@ -83,6 +160,7 @@ The script loads compromised packages from an external file (`compromised-packag
 - `ngx-bootstrap`, `angulartics2`, `koa2-swagger-ui` - Popular standalone packages
 
 ### Affected Namespaces (Complete List)
+
 - `@ctrl/*` - Control utility packages
 - `@crowdstrike/*` - CrowdStrike-related packages
 - `@art-ws/*` - Art workspace packages
@@ -131,11 +209,13 @@ Check these security advisories regularly for newly discovered compromised packa
 ### Core vs Paranoid Mode
 
 **Core Mode (Default)**
+
 - Focuses specifically on Shai-Hulud attack indicators
 - Recommended for most users checking for this specific threat
 - Clean, focused output with minimal false positives
 
 **Paranoid Mode (`--paranoid`)**
+
 - Includes all core Shai-Hulud detection PLUS additional security checks
 - Adds typosquatting detection and network exfiltration pattern analysis
 - ⚠️ **Important**: Paranoid features are general security tools, not specific to Shai-Hulud
@@ -151,13 +231,16 @@ Check these security advisories regularly for newly discovered compromised packa
 ## Output Interpretation
 
 ### Clean System
+
 ```
 ✅ No indicators of Shai-Hulud compromise detected.
 Your system appears clean from this specific attack.
 ```
 
 ### Compromised System
+
 The script will show:
+
 - **🚨 HIGH RISK**: Definitive indicators of compromise
 - **⚠️ MEDIUM RISK**: Suspicious patterns requiring manual review
 - **Summary**: Count of issues found
@@ -165,6 +248,7 @@ The script will show:
 ### What to Do if Issues are Found
 
 #### High Risk Issues
+
 - **Immediate action required**
 - Update or remove compromised packages
 - Review and remove malicious workflow files
@@ -172,6 +256,7 @@ The script will show:
 - Consider full system audit
 
 #### Medium Risk Issues
+
 - **Manual investigation needed**
 - Review flagged files for legitimacy
 - Check if webhook.site usage is intentional
@@ -233,6 +318,7 @@ If you discover additional IoCs or compromised packages related to the Shai-Hulu
 ## Security Note
 
 This script is for **detection only**. It does not:
+
 - Automatically remove malicious code
 - Fix compromised packages
 - Prevent future attacks
@@ -242,14 +328,18 @@ Always verify findings manually and take appropriate remediation steps.
 ## Latest Threat Intelligence Updates
 
 ### s1ngularity/Nx Connection (September 2025)
+
 Recent investigations have revealed a potential connection between the Shai-Hulud campaign and the Nx package ecosystem:
+
 - **Repository Migration Patterns**: Attackers are using repositories with "-migration" suffixes to distribute malicious packages
 - **Advanced Package Integrity Checks**: Double base64-encoded `data.json` files have been discovered in compromised package versions
 - **Additional Compromised Versions**: `tinycolor@4.1.1` and `tinycolor@4.1.2` have been identified as compromised
 - **New Package Targets**: `angulartics2` and `koa2-swagger-ui` packages have been added to the compromised list
 
 ### Enhanced Detection Capabilities
+
 The script now includes:
+
 - Repository migration pattern detection
 - Package-lock.json integrity verification
 - Context-aware Trufflehog detection to reduce false positives
@@ -258,6 +348,7 @@ The script now includes:
 ## References
 
 ### Primary Sources
+
 - [StepSecurity Blog: CTRL, tinycolor and 40 NPM packages compromised](https://www.stepsecurity.io/blog/ctrl-tinycolor-and-40-npm-packages-compromised)
 - [JFrog: New compromised packages in largest npm attack in history](https://jfrog.com/blog/new-compromised-packages-in-largest-npm-attack-in-history/)
 - [Aikido: NPM debug and chalk packages compromised](https://www.aikido.dev/blog/npm-debug-and-chalk-packages-compromised)
@@ -265,11 +356,13 @@ The script now includes:
 - [Aikido: S1ngularity-nx attackers strike again](https://www.aikido.dev/blog/s1ngularity-nx-attackers-strike-again)
 
 ### Additional Resources
+
 - [Socket: Ongoing supply chain attack targets CrowdStrike npm packages](https://socket.dev/blog/ongoing-supply-chain-attack-targets-crowdstrike-npm-packages)
 - [Ox Security: NPM 2.0 hack: 40+ npm packages hit in major supply chain attack](https://www.ox.security/blog/npm-2-0-hack-40-npm-packages-hit-in-major-supply-chain-attack/)
 - [Phoenix Security: NPM tinycolor compromise](https://phoenix.security/npm-tinycolor-compromise/)
 
 ### Attack Details
+
 - **Initial Discovery**: September 15, 2025
 - **Scale**: 571+ packages compromised across multiple attack campaigns
 - **Attack Type**: Self-replicating worm using postinstall hooks
@@ -285,6 +378,7 @@ We welcome contributions to improve the Shai-Hulud detector! The community's hel
 #### Adding New Compromised Packages
 
 1. **Fork the repository**
+
    ```bash
    git clone https://github.com/yourusername/shai-hulud-detector.git
    cd shai-hulud-detector
@@ -296,6 +390,7 @@ We welcome contributions to improve the Shai-Hulud detector! The community's hel
    - Group packages by namespace for organization
 
 3. **Test your changes**
+
    ```bash
    # Test that the script loads the new packages
    ./shai-hulud-detector.sh test-cases/clean-project
