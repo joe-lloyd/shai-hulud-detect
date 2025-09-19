@@ -13,6 +13,9 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+LOG_FILE="shai-hulud-findings.log"
+
+
 # Known malicious file hash
 MALICIOUS_HASH="46faab8ab153fae6e80e7cca38eab363075bb524edd79e42269217a083628f09"
 
@@ -94,18 +97,18 @@ NETWORK_EXFILTRATION_WARNINGS=()
 
 # Usage function
 usage() {
-    echo "Usage: $0 [--paranoid] <directory_to_scan>"
+    echo "Usage: $0 [--paranoid] [--skip-dir <directory_to_skip>] <directory_to_scan>" # MODIFIED
     echo
     echo "OPTIONS:"
-    echo "  --paranoid    Enable additional security checks (typosquatting, network patterns)"
-    echo "                These are general security features, not specific to Shai-Hulud"
+    echo "  --paranoid                  Enable additional security checks"
+    echo "  --skip-dir <directory>      Skip scanning a specific subdirectory (e.g., a submodule)" # ADDED
     echo
     echo "EXAMPLES:"
-    echo "  $0 /path/to/your/project                    # Core Shai-Hulud detection only"
-    echo "  $0 --paranoid /path/to/your/project         # Core + advanced security checks"
+    echo "  $0 /path/to/your/project"
+    echo "  $0 --paranoid /path/to/your/project"
+    echo "  $0 --skip-dir /path/to/your/project/submodule /path/to/your/project" # ADDED
     exit 1
 }
-
 # Print colored output
 print_status() {
     local color=$1
@@ -130,14 +133,18 @@ show_file_preview() {
 # Check for shai-hulud workflow files
 check_workflow_files() {
     local scan_dir=$1
+    shift; local find_skip_opts=("$@") # ADDED
+
     print_status "$BLUE" "🔍 Checking for malicious workflow files..."
 
     # Look specifically for shai-hulud-workflow.yml files
     while IFS= read -r file; do
         if [[ -f "$file" ]]; then
-            WORKFLOW_FILES+=("$file")
+            local finding="$file"
+            WORKFLOW_FILES+=("$finding")
+            echo "[WORKFLOW_FILE] $finding" >> "$LOG_FILE"
         fi
-    done < <(find "$scan_dir" -name "shai-hulud-workflow.yml" 2>/dev/null)
+    done < <(find "$scan_dir" "${find_skip_opts[@]}" -name "shai-hulud-workflow.yml" 2>/dev/null) # MODIFIED
 }
 
 # Check file hashes against known malicious hash
@@ -150,7 +157,9 @@ check_file_hashes() {
             local file_hash
             file_hash=$(shasum -a 256 "$file" 2>/dev/null | cut -d' ' -f1)
             if [[ "$file_hash" == "$MALICIOUS_HASH" ]]; then
-                MALICIOUS_HASHES+=("$file:$file_hash")
+                local finding="$file:$file_hash"
+                MALICIOUS_HASHES+=("$finding")
+                echo "[MALICIOUS_HASH] $finding" >> "$LOG_FILE"
             fi
         fi
     done < <(find "$scan_dir" -type f \( -name "*.js" -o -name "*.ts" -o -name "*.json" \) -print0 2>/dev/null)
@@ -159,33 +168,69 @@ check_file_hashes() {
 # Check package.json files for compromised packages
 check_packages() {
     local scan_dir=$1
+    shift; local find_skip_opts=("$@") 
+
     print_status "$BLUE" "🔍 Checking package.json files for compromised packages..."
 
-    while IFS= read -r -d '' package_file; do
+    local package_files=()
+    while IFS= read -r -d '' file; do
+        package_files+=("$file")
+    done < <(find "$scan_dir" "${find_skip_opts[@]}" -name "package.json" -print0 2>/dev/null)
+
+    local total=${#package_files[@]}
+    local count=0
+    
+    if [[ $total -eq 0 ]]; then
+        print_status "$YELLOW" "   -> No package.json files found to check in the selected scope."
+        return
+    fi
+
+    for package_file in "${package_files[@]}"; do
+        ((count++))
+        
+        local clean_name
+        clean_name=$(echo "$package_file" | tr -d '\n')
+        echo -ne "   (${count}/${total}) Checking: ${clean_name:0:70}...\r"
+
         if [[ -f "$package_file" && -r "$package_file" ]]; then
-            # Check for specific compromised packages
             for package_info in "${COMPROMISED_PACKAGES[@]}"; do
                 local package_name="${package_info%:*}"
                 local malicious_version="${package_info#*:}"
+                
+                set +e
+                local grep_output
+                grep_output=$(grep -A1 "\"$package_name\"" "$package_file" 2>&1)
+                local grep_status=$?
+                set -e
 
-                # Check both dependencies and devDependencies sections
-                if grep -q "\"$package_name\"" "$package_file" 2>/dev/null; then
+                if [[ $grep_status -eq 0 ]]; then
                     local found_version
-                    found_version=$(grep -A1 "\"$package_name\"" "$package_file" | grep -o '"[0-9]\+\.[0-9]\+\.[0-9]\+"' | tr -d '"' | head -1)
+                    # CORRECTED: Added '|| true' to prevent the script from exiting if no version match is found.
+                    found_version=$(echo "$grep_output" | grep -o '"[0-9]\+\.[0-9]\+\.[0-9]\+"' | tr -d '"' | head -1 || true)
+                    
                     if [[ "$found_version" == "$malicious_version" ]]; then
-                        COMPROMISED_FOUND+=("$package_file:$package_name@$malicious_version")
+                        local finding="$package_file:$package_name@$malicious_version"
+                        COMPROMISED_FOUND+=("$finding")
+                        echo "[COMPROMISED_PACKAGE] $finding" >> "$LOG_FILE" # ADD THIS LINE
                     fi
+                elif [[ $grep_status -gt 1 ]]; then
+                    echo -e "\n"
+                    print_status "$RED" "   ERROR: Could not read or grep '$package_file'. Message: $grep_output"
                 fi
             done
 
-            # Check for suspicious namespaces
             for namespace in "${COMPROMISED_NAMESPACES[@]}"; do
+                # This 'if' statement is safe and doesn't need modification
                 if grep -q "\"$namespace/" "$package_file" 2>/dev/null; then
-                    NAMESPACE_WARNINGS+=("$package_file:Contains packages from compromised namespace: $namespace")
+                    local finding="$package_file:Contains packages from compromised namespace: $namespace"
+                    NAMESPACE_WARNINGS+=("$finding")
+                    echo "[NAMESPACE_WARNING] $finding" >> "$LOG_FILE"
                 fi
             done
         fi
-    done < <(find "$scan_dir" -name "package.json" -print0 2>/dev/null)
+    done
+    
+    echo -e "\n   Finished checking $total package.json files."
 }
 
 # Check for suspicious postinstall hooks
@@ -202,29 +247,47 @@ check_postinstall_hooks() {
 
                 # Check for suspicious patterns in postinstall commands
                 if [[ "$postinstall_cmd" == *"curl"* ]] || [[ "$postinstall_cmd" == *"wget"* ]] || [[ "$postinstall_cmd" == *"node -e"* ]] || [[ "$postinstall_cmd" == *"eval"* ]]; then
-                    POSTINSTALL_HOOKS+=("$package_file:Suspicious postinstall: $postinstall_cmd")
+                    local finding="$package_file:Suspicious postinstall: $postinstall_cmd"
+                    POSTINSTALL_HOOKS+=("$finding")
+                    echo "[POSTINSTALL_HOOK] $finding" >> "$LOG_FILE"
                 fi
             fi
         fi
     done < <(find "$scan_dir" -name "package.json" -print0 2>/dev/null)
 }
 
-# Check for suspicious content patterns
+# Check for suspicious content patterns (with parallel processing)
 check_content() {
     local scan_dir=$1
-    print_status "$BLUE" "🔍 Checking for suspicious content patterns..."
+    shift; local find_skip_opts=("$@")
+    print_status "$BLUE" "🔍 Checking for suspicious content patterns (in parallel)..."
 
-    # Search for webhook.site references
-    while IFS= read -r -d '' file; do
-        if [[ -f "$file" && -r "$file" ]]; then
-            if grep -l "webhook\.site" "$file" >/dev/null 2>&1; then
-                SUSPICIOUS_CONTENT+=("$file:webhook.site reference")
-            fi
-            if grep -l "bb8ca5f6-4175-45d2-b042-fc9ebb8170b7" "$file" >/dev/null 2>&1; then
-                SUSPICIOUS_CONTENT+=("$file:malicious webhook endpoint")
-            fi
+    # Get the number of available CPU cores, defaulting to 2
+    local num_cores
+    num_cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+    print_status "$BLUE" "   (Using $num_cores cores for scanning)"
+
+    # Define the files we want to search in
+    local find_args=(
+        "$scan_dir" "${find_skip_opts[@]}" -type f \
+        '(' -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.yml" -o -name "*.yaml" ')' \
+        -print0 # Important: use -print0 with xargs -0
+    )
+
+    # Search multiple patterns at once using all cores
+    find "${find_args[@]}" | xargs -0 -P "$num_cores" grep -l -E "webhook\.site|bb8ca5f6-4175-45d2-b042-fc9ebb8170b7" 2>/dev/null | while IFS= read -r file; do
+        # We need to check which pattern was found
+        if grep -q "webhook\.site" "$file"; then
+            local finding="$file:webhook.site reference"
+            SUSPICIOUS_CONTENT+=("$finding")
+            echo "[SUSPICIOUS_CONTENT] $finding" >> "$LOG_FILE"
         fi
-    done < <(find "$scan_dir" -type f \( -name "*.js" -o -name "*.ts" -o -name "*.json" -o -name "*.yml" -o -name "*.yaml" \) -print0 2>/dev/null)
+        if grep -q "bb8ca5f6-4175-45d2-b042-fc9ebb8170b7" "$file"; then
+            local finding="$file:malicious webhook endpoint"
+            SUSPICIOUS_CONTENT+=("$finding")
+            echo "[SUSPICIOUS_CONTENT] $finding" >> "$LOG_FILE"
+        fi
+    done
 }
 
 # Check for cryptocurrency theft patterns (Chalk/Debug attack Sept 8, 2025)
@@ -236,13 +299,17 @@ check_crypto_theft_patterns() {
     while IFS= read -r -d '' file; do
         if grep -q "0x[a-fA-F0-9]\{40\}" "$file" 2>/dev/null; then
             if grep -q -E "ethereum|wallet|address|crypto" "$file" 2>/dev/null; then
-                CRYPTO_PATTERNS+=("$file:Ethereum wallet address patterns detected")
+                local finding="$file:Ethereum wallet address patterns detected"
+                CRYPTO_PATTERNS+=("$finding")
+                echo "[CRYPTO_PATTERN] $finding" >> "$LOG_FILE"
             fi
         fi
 
         # Check for XMLHttpRequest hijacking
         if grep -q "XMLHttpRequest\.prototype\.send" "$file" 2>/dev/null; then
-            CRYPTO_PATTERNS+=("$file:XMLHttpRequest prototype modification detected")
+            local finding="$file:XMLHttpRequest prototype modification detected"
+            CRYPTO_PATTERNS+=("$finding")
+            echo "[CRYPTO_PATTERN] $finding" >> "$LOG_FILE"
         fi
 
         # Check for specific malicious functions from chalk/debug attack
@@ -287,7 +354,9 @@ check_git_branches() {
                 branch_name=$(basename "$branch_file")
                 local commit_hash
                 commit_hash=$(cat "$branch_file" 2>/dev/null)
-                GIT_BRANCHES+=("$repo_dir:Branch '$branch_name' (commit: ${commit_hash:0:8}...)")
+                local finding="$repo_dir:Branch '$branch_name' (commit: ${commit_hash:0:8}...)"
+                GIT_BRANCHES+=("$finding")
+                echo "[GIT_BRANCH] $finding" >> "$LOG_FILE"
             done < <(find "$git_dir/refs/heads" -name "*shai-hulud*" -type f 2>/dev/null)
         fi
     done < <(find "$scan_dir" -name ".git" -type d -print0 2>/dev/null)
@@ -380,7 +449,9 @@ check_trufflehog_activity() {
                         ;;
                     "node_modules"|"type_definitions"|"build_output")
                         # Framework code mentioning trufflehog is suspicious but not high risk
-                        TRUFFLEHOG_ACTIVITY+=("$file:MEDIUM:Contains trufflehog references in $context")
+                        local finding="$file:MEDIUM:Contains trufflehog references in $context"
+                        TRUFFLEHOG_ACTIVITY+=("$finding")
+                        echo "[TRUFFLEHOG_ACTIVITY] $finding" >> "$LOG_FILE"
                         ;;
                     *)
                         # Source code with trufflehog references needs investigation
@@ -469,7 +540,9 @@ check_shai_hulud_repos() {
         local repo_name
         repo_name=$(basename "$repo_dir")
         if [[ "$repo_name" == *"shai-hulud"* ]] || [[ "$repo_name" == *"Shai-Hulud"* ]]; then
-            SHAI_HULUD_REPOS+=("$repo_dir:Repository name contains 'Shai-Hulud'")
+            local finding="$repo_dir:Repository name contains 'Shai-Hulud'"
+            SHAI_HULUD_REPOS+=("$finding")
+            echo "[SHAI_HULUD_REPO] $finding" >> "$LOG_FILE"
         fi
 
         # Check for migration pattern repositories (new IoC)
@@ -510,9 +583,13 @@ check_package_integrity() {
 
                 if grep -q "\"$package_name\"" "$lockfile" 2>/dev/null; then
                     local found_version
-                    found_version=$(grep -A5 "\"$package_name\"" "$lockfile" | grep '"version":' | head -1 | grep -o '"[0-9]\+\.[0-9]\+\.[0-9]\+"' | tr -d '"')
+                    found_version=$(grep -A5 "\"$package_name\"" "$lockfile" | grep '"version":' | head -1 | grep -o '"[0-9]\+\.[0-9]\+\.[0-9]\+"' | tr -d '"' || true)
                     if [[ "$found_version" == "$malicious_version" ]]; then
-                        INTEGRITY_ISSUES+=("$lockfile:Compromised package in lockfile: $package_name@$malicious_version")
+                        local finding="$lockfile:Compromised package in lockfile: $package_name@$malicious_version"
+                        INTEGRITY_ISSUES+=("$finding")
+                        echo "[INTEGRITY_ISSUE] $finding" >> "$LOG_FILE"
+                    else
+                        INTEGRITY_ISSUES+=("$lockfile:You are using packages with known malafide versions (not this specific version $malicious_version): $package_name")
                     fi
                 fi
             done
@@ -535,7 +612,7 @@ check_package_integrity() {
                 fi
             fi
         fi
-    done < <(find "$scan_dir" -name "package-lock.json" -o -name "yarn.lock" -print0 2>/dev/null)
+    done < <(find "$scan_dir" \( -name "package-lock.json" -o -name "yarn.lock" \) -print0 2>/dev/null)
 }
 
 # Check for typosquatting and homoglyph attacks
@@ -585,7 +662,9 @@ check_typosquatting() {
 
                 if [[ $has_unicode -eq 1 ]]; then
                     # Simplified check - if it contains non-standard characters, flag it
-                    TYPOSQUATTING_WARNINGS+=("$package_file:Potential Unicode/homoglyph characters in package: $package_name")
+                    local finding="$package_file:Potential Unicode/homoglyph characters in package: $package_name"
+                    TYPOSQUATTING_WARNINGS+=("$finding")
+                    echo "[TYPOSQUATTING] $finding" >> "$LOG_FILE"
                 fi
 
                 # Check for confusable characters (common typosquatting patterns)
@@ -727,7 +806,9 @@ check_network_exfiltration() {
                         if [[ "$file" == *".min.js"* ]]; then
                             NETWORK_EXFILTRATION_WARNINGS+=("$file:Hardcoded IP addresses found (minified file): $ips_context")
                         else
-                            NETWORK_EXFILTRATION_WARNINGS+=("$file:Hardcoded IP addresses found: $ips_context")
+                            local finding="$file:Hardcoded IP addresses found: $ips_context"
+                            NETWORK_EXFILTRATION_WARNINGS+=("$finding")
+                            echo "[NETWORK_EXFIL] $finding" >> "$LOG_FILE"
                         fi
                     fi
                 fi
@@ -1193,6 +1274,8 @@ generate_report() {
 main() {
     local paranoid_mode=false
     local scan_dir=""
+    local skip_dir="" # ADDED
+    local find_skip_opts=() # ADDED
 
     # Load compromised packages from external file
     load_compromised_packages
@@ -1203,6 +1286,15 @@ main() {
             --paranoid)
                 paranoid_mode=true
                 shift
+                ;;
+            --skip-dir) # ADDED SECTION
+                if [[ -n "$2" ]]; then
+                    skip_dir="$2"
+                    shift 2
+                else
+                    echo "Error: --skip-dir requires a directory path."
+                    usage
+                fi
                 ;;
             --help|-h)
                 usage
@@ -1235,6 +1327,30 @@ main() {
     # Convert to absolute path
     scan_dir=$(cd "$scan_dir" && pwd)
 
+    # ADDED: Initialize the log file for this run
+    echo "Shai-Hulud Scan Log - $(date)" > "$LOG_FILE"
+    echo "Scanning Directory: $scan_dir" >> "$LOG_FILE"
+    echo "------------------------------------------" >> "$LOG_FILE"
+    print_status "$YELLOW" "ℹ️  Findings will be saved to: $LOG_FILE"
+
+
+    # ADDED: Prepare the find options for skipping a directory
+    if [[ -n "$skip_dir" ]]; then
+        # Resolve the skip_dir path relative to the scan_dir if it's not absolute
+        if [[ "$skip_dir" != /* ]]; then
+            skip_dir="$scan_dir/$skip_dir"
+        fi
+
+        if [[ ! -d "$skip_dir" ]]; then
+            print_status "$RED" "Error: Skip directory '$skip_dir' does not exist."
+            exit 1
+        fi
+        # Create the arguments for find's -prune command
+        find_skip_opts=(-path "$skip_dir" -prune -o)
+        print_status "$YELLOW" "ℹ️  Skipping directory: $skip_dir"
+    fi
+
+
     print_status "$GREEN" "Starting Shai-Hulud detection scan..."
     if [[ "$paranoid_mode" == "true" ]]; then
         print_status "$BLUE" "Scanning directory: $scan_dir (with paranoid mode enabled)"
@@ -1244,23 +1360,23 @@ main() {
     echo
 
     # Run core Shai-Hulud detection checks
-    check_workflow_files "$scan_dir"
-    check_file_hashes "$scan_dir"
-    check_packages "$scan_dir"
-    check_postinstall_hooks "$scan_dir"
-    check_content "$scan_dir"
-    check_crypto_theft_patterns "$scan_dir"
-    check_trufflehog_activity "$scan_dir"
-    check_git_branches "$scan_dir"
-    check_shai_hulud_repos "$scan_dir"
-    check_package_integrity "$scan_dir"
+    check_workflow_files "$scan_dir" "${find_skip_opts[@]}"
+    check_file_hashes "$scan_dir" "${find_skip_opts[@]}"
+    check_packages "$scan_dir" "${find_skip_opts[@]}"
+    check_postinstall_hooks "$scan_dir" "${find_skip_opts[@]}"
+    check_content "$scan_dir" "${find_skip_opts[@]}"
+    check_crypto_theft_patterns "$scan_dir" "${find_skip_opts[@]}"
+    check_trufflehog_activity "$scan_dir" "${find_skip_opts[@]}"
+    check_git_branches "$scan_dir" "${find_skip_opts[@]}"
+    check_shai_hulud_repos "$scan_dir" "${find_skip_opts[@]}"
+    check_package_integrity "$scan_dir" "${find_skip_opts[@]}"
 
     # Run additional security checks only in paranoid mode
     if [[ "$paranoid_mode" == "true" ]]; then
         print_status "$BLUE" "🔍+ Checking for typosquatting and homoglyph attacks..."
-        check_typosquatting "$scan_dir"
+        check_typosquatting "$scan_dir" "${find_skip_opts[@]}"
         print_status "$BLUE" "🔍+ Checking for network exfiltration patterns..."
-        check_network_exfiltration "$scan_dir"
+        check_network_exfiltration "$scan_dir" "${find_skip_opts[@]}"
     fi
 
     # Generate report
